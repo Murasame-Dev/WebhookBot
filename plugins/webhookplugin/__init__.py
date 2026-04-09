@@ -14,7 +14,7 @@ __plugin_meta__ = PluginMetadata(
 
 config = get_plugin_config(Config)
 
-from . import db
+from . import storage
 from . import api
 from . import command
 from . import sender
@@ -24,7 +24,7 @@ driver = get_driver()
 
 @driver.on_startup
 async def startup():
-    await db.init_db()
+    await storage.init_db()
     # 启动独立的 FastAPI 实例
     host = config.webhook_host
     port = config.webhook_port

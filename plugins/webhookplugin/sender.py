@@ -4,20 +4,22 @@ from nonebot import logger
 from nonebot_plugin_alconna import Target, UniMessage
 from sqlalchemy import select
 
-from .db import Route, FieldMap, AuditLog, async_session
+from .storage import Route, AuditLog, async_session, get_field_maps
 
-async def dict_to_formatted_str(code: str, payload_dict: dict) -> str:
+async def dict_to_formatted_str(code: str, payload_dict: dict, msg_index: int, dt: datetime = None) -> str:
     # 获取所有的映射
-    async with async_session() as session:
-        result = await session.scalars(select(FieldMap))
-        maps = {x.raw_field: x.mapped_field for x in result.all()}
+    maps = get_field_maps()
     
-    server_time = datetime.now().strftime("%Y/%m/%d-%H:%M:%S")
+    if dt is None:
+        dt = datetime.now()
+    server_time = dt.strftime("%Y/%m/%d-%H:%M:%S")
+    
     lines = [f"代号 {code} 发送了以下消息:"]
     for k, v in payload_dict.items():
         mapped_key = maps.get(k, k)
-        lines.append(f"{mapped_key}: {v}")
+        lines.append(f"{mapped_key}: {v}\n")
     
+    lines.append(f"编号: {msg_index}")
     lines.append(f"接收时间(服务器侧): {server_time}")
     return "\n".join(lines)
 
@@ -32,8 +34,10 @@ async def broadcast_webhook_message(route_code: str, payload_dict: dict):
             
         users: list[str] = json.loads(route.users)
         groups: list[str] = json.loads(route.groups)
+        
+        msg_index = route.total_calls + 1
     
-    msg_text = await dict_to_formatted_str(route_code, payload_dict)
+    msg_text = await dict_to_formatted_str(route_code, payload_dict, msg_index)
     um_msg = UniMessage.text(msg_text)
 
     # Broadcast

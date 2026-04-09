@@ -8,7 +8,8 @@ from arclet.alconna import Alconna, Args, Option, Subcommand, CommandMeta
 from nonebot_plugin_alconna import on_alconna, Match, AlconnaMatch, Arparma
 from sqlalchemy import select, delete
 
-from .db import Route, FieldMap, SystemConfig, async_session
+from .storage import Route, SystemConfig, AuditLog, async_session, save_field_map, init_db
+from .sender import dict_to_formatted_str
 
 # Nonebot Alconna 匹配路由注册器入口定义
 webhook_cmd = on_alconna(
@@ -21,17 +22,26 @@ webhook_cmd = on_alconna(
         ),
         Subcommand("remove", Args["code?", str]),
         Subcommand("info", Args["code?", str]),
+        Subcommand("list"),
         Subcommand("edit", 
             Args["code?", str],
+            Option("name:", Args["name?", str], compact=True),
             Option("path:", Args["path?", str], compact=True),
             Option("token:", Args["token?", str], compact=True),
             Option("domain:", Args["domain?", str], compact=True),
-            Option("dmview:", Args["dmview?", str], compact=True)
+            Option("dmview:", Args["dmview?", str], compact=True),
+            Option("verify_token:", Args["verify_token?", str], compact=True)
         ),
         Subcommand("value",
             Subcommand("create", Args["raw?", str]["mapped?", str])
         ),
-        Subcommand("system", Subcommand("edit", Option("secure:", Args["secure?", str], compact=True))),
+        Subcommand("msg", 
+            Subcommand("view", Args["code?", str]["msg_id?", int])
+        ),
+        Subcommand("system", 
+            Subcommand("edit", Option("secure:", Args["secure?", str], compact=True)),
+            Subcommand("reload", Args["type?", str])
+        ),
         meta=CommandMeta(description="Webhook Bot Management")
     ),
     permission=SUPERUSER,
@@ -46,10 +56,13 @@ async def default_help(arp: Arparma):
             "指令列表:\n"
             "/webhook create user:id,id group:id,id 代号 - 创建路由\n"
             "/webhook remove 代号 - 删除路由\n"
+            "/webhook list - 显示所有实例代号\n"
             "/webhook info 代号 - 查询路由\n"
-            "/webhook edit 代号 path:新路径 token:新秘钥 domain:新域名 dmview:true/false - 修改配置\n"
+            "/webhook edit 代号 name:新名字 path:新路径 token:新秘钥 domain:新域名 dmview:true/false verify_token:join/header - 修改配置\n"
+            "/webhook msg view 代号 1 - 查询代号实例的历史消息\n"
             "/webhook value create 原字段 映射词 - 创建消息映射字典\n"
-            "/webhook system edit secure:true/false - 严格模式全局开关"
+            "/webhook system edit secure:true/false - 严格模式全局开关\n"
+            "/webhook system reload value/db/all - 重载映射词/数据库/全部"
         )
         await webhook_cmd.finish(help_msg)
 
@@ -120,59 +133,118 @@ async def info_webhook(code: Match[str]):
         domains_list = json.loads(route.domains) if getattr(route, "domains", None) else []
         domains_str = ",".join(domains_list) if domains_list else "未配置"
         dmview_str = "允许 (true)" if getattr(route, "dmview", True) else "禁止 (false)"
-        
-        info_str = (
-            f"代号: {route.code}\n"
-            f"路径: /webhook/{route.path}\n"
-            f"非绑定域名访问: {dmview_str}\n"
-            f"绑定域名: {domains_str}\n"
-            f"总调用次数: {route.total_calls}\n"
-            f"调用失败次数: {route.failed_calls}\n"
-            f"创建日期: {route.created_at.strftime('%Y/%m/%d-%H:%M:%S')}\n"
-            f"最后修改日期: {route.updated_at.strftime('%Y/%m/%d-%H:%M:%S')}"
-        )
-        await webhook_cmd.send(info_str)
+        verify_token = getattr(route, "verify_token", "join")
+
+        msg = []
+        msg += f"代号: {route.code}"
+        msg += f"名字: {getattr(route, 'name', '未设置') or '未设置'}"
+        msg += f"路径: /webhook/{route.path}"
+        msg += f"鉴权方式: {'路径拼接(join)' if verify_token == 'join' else '请求头(header)'}"
+        msg += f"仅允许域名访问: {dmview_str}"
+        if domains_str:
+            msg += f"绑定域名: {domains_str}"
+        msg += f"总调用次数: {route.total_calls}"
+        if route.failed_calls:
+            msg += f"调用失败次数: {route.failed_calls}"
+        msg += f"创建日期: {route.created_at.strftime('%Y/%m/%d-%H:%M:%S')}"
+        msg += f"最后修改日期: {route.updated_at.strftime('%Y年%m月%d日-%H:%M:%S')}"
+
+        await webhook_cmd.send("\n".join(msg))
+
+@webhook_cmd.assign("list")
+async def list_webhooks():
+    async with async_session() as session:
+        routes = await session.scalars(select(Route.code))
+        codes = routes.all()
+        if not codes:
+            await webhook_cmd.finish("当前没有任何实例。")
+            return
+        await webhook_cmd.send("当前存在的实例:\n" + "\n".join(codes))
 
 @webhook_cmd.assign("edit")
-async def edit_webhook(code: Match[str], path: Match[str], token: Match[str], domain: Match[str], dmview: Match[str]):
+async def edit_webhook(code: Match[str], name: Match[str], path: Match[str], token: Match[str], domain: Match[str], dmview: Match[str], verify_token: Match[str]):
     if not code.available:
         await webhook_cmd.finish("请提供代号!")
-    if not any([path.available, token.available, domain.available, dmview.available]):
-        await webhook_cmd.finish("请至少提供 path, token, domain 或 dmview 参数进行修改。\n示例：/webhook edit 代号 path:xxx token:xxx")
+    if not any([name.available, path.available, token.available, domain.available, dmview.available, verify_token.available]):
+        await webhook_cmd.finish("请至少提供 name, path, token, domain, dmview 或 verify_token 参数进行修改。\n示例：/webhook edit 代号 name:新名字 verify_token:header")
 
     async with async_session() as session:
         route = await session.scalar(select(Route).where(Route.code == code.result))
         if not route:
             await webhook_cmd.finish(f"找不到代号为 {code.result} 的路由。")
             return
+        
+        # 解释修改了什么东西
+        changes = []
+        if name.available:
+            route.name = name.result
+            changes.append(f"名字 -> {name.result}")
         if path.available:
             route.path = path.result
+            changes.append(f"路径 -> {path.result}")
         if token.available:
             route.token = token.result
+            changes.append(f"秘钥 -> {token.result}")
         if domain.available:
             # 切割并过滤空白
             parsed_domains = [d.strip() for d in domain.result.split(",") if d.strip()]
             route.domains = json.dumps(parsed_domains)
+            changes.append(f"绑定域名 -> {parsed_domains}")
         if dmview.available:
             route.dmview = dmview.result.lower() == "true"
+            changes.append(f"非绑定域名访问 -> {'允许(true)' if route.dmview else '禁止(false)'}")
+        if verify_token.available:
+            if verify_token.result not in ["join", "header"]:
+                await webhook_cmd.finish("verify_token 参数只允许使用 'join' 或 'header'")
+            route.verify_token = verify_token.result
+            changes.append(f"鉴权方式 -> {'路径拼接(join)' if verify_token.result == 'join' else '请求头(header)'}")
             
         await session.commit()
         
-    await webhook_cmd.send(f"✅ 已成功修改代号 {code.result} 的信息。")
+    changes_str = "\n".join([f"- {c}" for c in changes])
+    await webhook_cmd.send(f"✅ 已成功修改代号 {code.result} 的信息:\n{changes_str}")
+
+@webhook_cmd.assign("msg.view")
+async def msg_view(code: Match[str], msg_id: Match[int]):
+    if not code.available or not msg_id.available:
+        await webhook_cmd.finish("请提供代号和编号!\n示例：/webhook msg view 代号 1")
+    
+    target_code = code.result
+    target_id = msg_id.result
+    
+    if target_id < 1:
+        await webhook_cmd.finish("编号必须大于等于 1。")
+
+    async with async_session() as session:
+        # 考虑到仅推送成功的或者即使推送失败但是在 sender 内确实处理过的信息才会+1
+        # api内如果403拦截了（拦截域名或者token非法）由于没进入sender所以不应该算作正常的编号系列内（或者是独立的一套？）
+        # 在之前逻辑中，route.total_calls 只有在 broadcast 后才会+1
+        # 所以对应的记录是 status IN ('success', 'partial', 'failed')
+        stmt = select(AuditLog).where(
+            AuditLog.route_code == target_code,
+            AuditLog.status.in_(["success", "partial", "failed"])
+        ).order_by(AuditLog.id).offset(target_id - 1).limit(1)
+        
+        log = await session.scalar(stmt)
+        if not log:
+            await webhook_cmd.finish(f"未找到代号 {target_code} 的第 {target_id} 条历史访问记录。")
+            return
+            
+        try:
+            payload = json.loads(log.payload)
+        except Exception:
+            payload = {"Raw Payload": log.payload}
+            
+        msg_text = await dict_to_formatted_str(target_code, payload, target_id, log.called_at)
+        
+    await webhook_cmd.send(msg_text)
 
 @webhook_cmd.assign("value.create")
 async def create_value_map(raw: Match[str], mapped: Match[str]):
     if not raw.available or not mapped.available:
         await webhook_cmd.finish("请提供原始值和代词!\n示例：/webhook value create raw mapped")
 
-    async with async_session() as session:
-        existing = await session.scalar(select(FieldMap).where(FieldMap.raw_field == raw.result))
-        if existing:
-            existing.mapped_field = mapped.result
-        else:
-            new_map = FieldMap(raw_field=raw.result, mapped_field=mapped.result)
-            session.add(new_map)
-        await session.commit()
+    save_field_map(raw.result, mapped.result)
         
     await webhook_cmd.send(f"✅ 特殊值映射创建成功：{raw.result} -> {mapped.result}")
 
@@ -191,3 +263,31 @@ async def edit_system(secure: Match[str]):
         await session.commit()
         
     await webhook_cmd.send(f"✅ 严格模式已设置为 {val_str}")
+
+@webhook_cmd.assign("system.reload")
+async def reload_system(type: Match[str]):
+    if not type.available:
+        await webhook_cmd.finish("❌ 请指定重载类型，例如 value, db 或 all\n示例：/webhook system reload all")
+        
+    target = type.result.lower()
+    if target not in ["value", "db", "all"]:
+        await webhook_cmd.finish("❌ 错误的参数。仅支持 value, db 或 all")
+
+    msg_lines = []
+    
+    # 目前 value(field_maps.json) 是每次读取时直接访问磁盘的，本身即为"热重载"的。
+    # 这里为了满足用户的重载认知流程和未来可能扩展的缓存机制，显式进行反馈提醒。
+    if target in ["value", "all"]:
+        from .storage import get_field_maps
+        get_field_maps() # 预读一次验证是否能读通
+        msg_lines.append("✅ 映射词 (value) 已重载刷新")
+        
+    if target in ["db", "all"]:
+        # 执行数据库模型初始化和同步测试
+        try:
+            await init_db()
+            msg_lines.append("✅ 数据库 (db) 引擎配置与状态已经重新同步")
+        except Exception as e:
+            msg_lines.append(f"❌ 数据库 (db) 重载时发生异常: {str(e)}")
+
+    await webhook_cmd.send("\n".join(msg_lines))
