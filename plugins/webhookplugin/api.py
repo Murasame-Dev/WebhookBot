@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException, status, Response
 from fastapi.responses import JSONResponse
@@ -11,10 +12,26 @@ from .sender import broadcast_webhook_message
 
 app = FastAPI(title="WebhookBot API")
 
+# 全局内存字典，用于记录对应 IP 的请求访问时间戳历史：ip -> [timestamp1, timestamp2, ...]
+_RATE_LIMITS = {}
+
 async def is_secure_mode() -> bool:
     async with async_session() as session:
         conf = await session.scalar(select(SystemConfig).where(SystemConfig.key == "secure_mode"))
         return conf is not None and conf.value == "true"
+
+async def is_nginx_mode() -> bool:
+    async with async_session() as session:
+        conf = await session.scalar(select(SystemConfig).where(SystemConfig.key == "nginx_mode"))
+        return conf is not None and conf.value == "true"
+
+def extract_client_ip(request: Request, nginx_mode: bool) -> str:
+    if nginx_mode:
+        forwarded_for = request.headers.get("X-Forwarded-For")
+        if forwarded_for:
+            # 取 XFF 头中的第一个 IP 为源 IP
+            return forwarded_for.split(",")[0].strip()
+    return request.client.host if request.client else "Unknown"
 
 @app.exception_handler(404)
 async def handle_404(request: Request, exc):
@@ -31,6 +48,8 @@ async def handle_405(request: Request, exc):
 @app.post("/webhook/{path}")
 async def handle_webhook(path: str, request: Request):
     secure = await is_secure_mode()
+    nginx_mode = await is_nginx_mode()
+    client_ip = extract_client_ip(request, nginx_mode)
     
     # 获取传入的 Webhook 路由信息对象并执行检查流水线
     async with async_session() as session:
@@ -43,13 +62,48 @@ async def handle_webhook(path: str, request: Request):
                 detail="Webhook route not found"
             )
 
+        # 0. 速率限制检查
+        rl_conf = await session.scalar(select(SystemConfig).where(SystemConfig.key == "ratelimit"))
+        if rl_conf and rl_conf.value and rl_conf.value != "clear":
+            try:
+                c_str, t_str = rl_conf.value.split(",")
+                max_hits = int(c_str)
+                window_sec = int(t_str) * 60
+                
+                now = time.time()
+                records = _RATE_LIMITS.get(client_ip, [])
+                records = [t for t in records if now - t < window_sec]
+                
+                if len(records) >= max_hits:
+                    route.total_calls += 1
+                    route.failed_calls += 1
+                    audit = AuditLog(
+                        route_code=route.code,
+                        payload=f"[Rate Limited - {max_hits} hits / {t_str} mins]", 
+                        status="429", 
+                        message="Too Many Requests", 
+                        client_ip=client_ip
+                    )
+                    session.add(audit)
+                    await session.commit()
+                    if secure:
+                        return Response(status_code=502)
+                    raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too Many Requests")
+                
+                records.append(now)
+                _RATE_LIMITS[client_ip] = records
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Rate limit verification error: {e}")
+
         # 1. 验证 JSON 请求体
         try:
             payload = await request.json()
         except json.JSONDecodeError:
             route.total_calls += 1
             route.failed_calls += 1
-            audit = AuditLog(route_code=route.code, payload="[Invalid JSON]", status="400", message="Payload must be valid JSON")
+            audit = AuditLog(route_code=route.code, payload="[Invalid JSON]", status="400", message="Payload must be valid JSON", client_ip=client_ip)
             session.add(audit)
             await session.commit()
             if secure:
@@ -58,7 +112,7 @@ async def handle_webhook(path: str, request: Request):
         except Exception:
             route.total_calls += 1
             route.failed_calls += 1
-            audit = AuditLog(route_code=route.code, payload="[Error reading payload]", status="400", message="Error retrieving payload as JSON")
+            audit = AuditLog(route_code=route.code, payload="[Error reading payload]", status="400", message="Error retrieving payload as JSON", client_ip=client_ip)
             session.add(audit)
             await session.commit()
             if secure:
@@ -67,12 +121,15 @@ async def handle_webhook(path: str, request: Request):
 
         # 2. 内容检查：跨域主机名或允许任意主机名访问等逻辑
         if not getattr(route, "dmview", True):
-            host = request.url.hostname
+            host = request.headers.get("X-Forwarded-Host") if nginx_mode else request.url.hostname
+            if not host:
+                host = request.url.hostname
+                
             domains = json.loads(route.domains) if getattr(route, "domains", None) else []
             if host not in domains:
                 route.total_calls += 1
                 route.failed_calls += 1
-                audit = AuditLog(route_code=route.code, payload=json.dumps(payload, ensure_ascii=False), status="403", message=f"Domain blocked: {host}")
+                audit = AuditLog(route_code=route.code, payload=json.dumps(payload, ensure_ascii=False), status="403", message=f"Domain blocked: {host}", client_ip=client_ip)
                 session.add(audit)
                 await session.commit()
                 if secure:
@@ -89,7 +146,7 @@ async def handle_webhook(path: str, request: Request):
         if req_token != route.token:
             route.total_calls += 1
             route.failed_calls += 1
-            audit = AuditLog(route_code=route.code, payload=json.dumps(payload, ensure_ascii=False), status="403", message="Token mismatch")
+            audit = AuditLog(route_code=route.code, payload=json.dumps(payload, ensure_ascii=False), status="403", message="Token mismatch", client_ip=client_ip)
             session.add(audit)
             await session.commit()
             if secure:
@@ -97,7 +154,7 @@ async def handle_webhook(path: str, request: Request):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token")
 
     # 创建独立的后台异步任务分发群组与用户消息广播（阻止发送期间造成的耗时问题阻塞 API 快速完成）
-    asyncio.create_task(broadcast_webhook_message(route.code, payload))
+    asyncio.create_task(broadcast_webhook_message(route.code, payload, client_ip))
 
     return {"status": "accepted"}
 

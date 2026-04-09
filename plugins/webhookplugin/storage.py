@@ -48,6 +48,7 @@ class AuditLog(Base):
     payload: Mapped[str] = mapped_column(Text())
     status: Mapped[str] = mapped_column(String(50))
     message: Mapped[str] = mapped_column(Text(), nullable=True)
+    client_ip: Mapped[str] = mapped_column(String(50), nullable=True) # 请求者的 IP 地址
     called_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class SystemConfig(Base):

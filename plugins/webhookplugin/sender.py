@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from .storage import Route, AuditLog, async_session, get_field_maps
 
-async def dict_to_formatted_str(code: str, payload_dict: dict, msg_index: int, dt: datetime = None) -> str:
+async def dict_to_formatted_str(code: str, payload_dict: dict, msg_index: int, dt: datetime = None, client_ip: str = None) -> str:
     # 获取所有的映射
     maps = get_field_maps()
     
@@ -24,7 +24,7 @@ async def dict_to_formatted_str(code: str, payload_dict: dict, msg_index: int, d
     return "\n".join(lines)
 
 
-async def broadcast_webhook_message(route_code: str, payload_dict: dict):
+async def broadcast_webhook_message(route_code: str, payload_dict: dict, client_ip: str = "Unknown"):
     # Retrieve Route
     async with async_session() as session:
         route: Route = await session.scalar(select(Route).where(Route.code == route_code))
@@ -37,7 +37,7 @@ async def broadcast_webhook_message(route_code: str, payload_dict: dict):
         
         msg_index = route.total_calls + 1
     
-    msg_text = await dict_to_formatted_str(route_code, payload_dict, msg_index)
+    msg_text = await dict_to_formatted_str(route_code, payload_dict, msg_index, client_ip=client_ip)
     um_msg = UniMessage.text(msg_text)
 
     # Broadcast
@@ -69,7 +69,8 @@ async def broadcast_webhook_message(route_code: str, payload_dict: dict):
             route_code=route_code,
             payload=json.dumps(payload_dict, ensure_ascii=False),
             status="success" if failed_calls == 0 else ("partial" if failed_calls < total_calls else "failed"),
-            message=f"{failed_calls}/{total_calls} fails"
+            message=f"{failed_calls}/{total_calls} fails",
+            client_ip=client_ip
         )
         session.add(audit)
         await session.commit()

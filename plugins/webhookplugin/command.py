@@ -39,7 +39,11 @@ webhook_cmd = on_alconna(
             Subcommand("view", Args["code?", str]["msg_id?", int])
         ),
         Subcommand("system", 
-            Subcommand("edit", Option("secure:", Args["secure?", str], compact=True)),
+            Subcommand("edit", 
+                Option("secure:", Args["secure?", str], compact=True),
+                Option("nginx_mode:", Args["nginx_mode?", str], compact=True),
+                Option("ratelimit:", Args["ratelimit?", str], compact=True)
+            ),
             Subcommand("reload", Args["type?", str])
         ),
         meta=CommandMeta(description="Webhook Bot Management")
@@ -61,7 +65,7 @@ async def default_help(arp: Arparma):
             "/webhook edit 代号 name:新名字 path:新路径 token:新秘钥 domain:新域名 dmview:true/false verify_token:join/header - 修改配置\n"
             "/webhook msg view 代号 1 - 查询代号实例的历史消息\n"
             "/webhook value create 原字段 映射词 - 创建消息映射字典\n"
-            "/webhook system edit secure:true/false - 严格模式全局开关\n"
+            "/webhook system edit secure:true/false nginx_mode:true/false ratelimit:次数,时间(分)/clear - 配置系统模式\n"
             "/webhook system reload value/db/all - 重载映射词/数据库/全部"
         )
         await webhook_cmd.finish(help_msg)
@@ -235,7 +239,7 @@ async def msg_view(code: Match[str], msg_id: Match[int]):
         except Exception:
             payload = {"Raw Payload": log.payload}
             
-        msg_text = await dict_to_formatted_str(target_code, payload, target_id, log.called_at)
+        msg_text = await dict_to_formatted_str(target_code, payload, target_id, log.called_at, log.client_ip)
         
     await webhook_cmd.send(msg_text)
 
@@ -249,20 +253,56 @@ async def create_value_map(raw: Match[str], mapped: Match[str]):
     await webhook_cmd.send(f"✅ 特殊值映射创建成功：{raw.result} -> {mapped.result}")
 
 @webhook_cmd.assign("system.edit")
-async def edit_system(secure: Match[str]):
-    if not secure.available:
-        await webhook_cmd.finish("❌️ 参数不足，比如 secure:true")
+async def edit_system(secure: Match[str], nginx_mode: Match[str], ratelimit: Match[str]):
+    if not secure.available and not nginx_mode.available and not ratelimit.available:
+        await webhook_cmd.finish("❌️ 请至少提供一项系统配置：secure/nginx_mode/ratelimit")
         
-    val_str = "true" if secure.result.lower() == "true" else "false"
+    updates = []
     async with async_session() as session:
-        conf = await session.scalar(select(SystemConfig).where(SystemConfig.key == "secure_mode"))
-        if conf:
-            conf.value = val_str
-        else:
-            session.add(SystemConfig(key="secure_mode", value=val_str))
+        if secure.available:
+            val_str = "true" if secure.result.lower() == "true" else "false"
+            conf = await session.scalar(select(SystemConfig).where(SystemConfig.key == "secure_mode"))
+            if conf:
+                conf.value = val_str
+            else:
+                session.add(SystemConfig(key="secure_mode", value=val_str))
+            updates.append(f"严格模式 (secure) -> {val_str}")
+            
+        if nginx_mode.available:
+            val_str = "true" if nginx_mode.result.lower() == "true" else "false"
+            conf = await session.scalar(select(SystemConfig).where(SystemConfig.key == "nginx_mode"))
+            if conf:
+                conf.value = val_str
+            else:
+                session.add(SystemConfig(key="nginx_mode", value=val_str))
+            updates.append(f"Nginx代理透传支持 (nginx_mode) -> {val_str}")
+            
+        if ratelimit.available:
+            val = ratelimit.result.lower()
+            if val == "clear":
+                val_str = "clear"
+                updates.append("速率限制 (ratelimit) -> 已清除(无限制)")
+            else:
+                try:
+                    c, t = val.split(",")
+                    c = int(c)
+                    t = int(t)
+                    if c <= 0 or t <= 0:
+                        raise ValueError
+                    val_str = f"{c},{t}"
+                    updates.append(f"速率限制 (ratelimit) -> 当一IP在 {t} 分钟内最多 {c} 次")
+                except Exception:
+                    await webhook_cmd.finish("❌️ ratelimit 参数格式错误！请使用 '次数,时间(分)'（例如 10,1 代表每分钟10次）或 'clear' 清除限制。")
+            
+            conf = await session.scalar(select(SystemConfig).where(SystemConfig.key == "ratelimit"))
+            if conf:
+                conf.value = val_str
+            else:
+                session.add(SystemConfig(key="ratelimit", value=val_str))
+            
         await session.commit()
         
-    await webhook_cmd.send(f"✅ 严格模式已设置为 {val_str}")
+    await webhook_cmd.send("✅ 系统设定已更新：\n- " + "\n- ".join(updates))
 
 @webhook_cmd.assign("system.reload")
 async def reload_system(type: Match[str]):
