@@ -72,19 +72,33 @@ async def init_db():
     if not json_filepath.exists():
         with open(json_filepath, "w", encoding="utf-8") as f:
             json.dump({}, f, ensure_ascii=False, indent=4)
+            
+    # 初始化读取映射词缓存
+    load_field_maps()
 
-def get_field_maps() -> dict:
+_FIELD_MAPS_CACHE = None
+
+def load_field_maps():
+    global _FIELD_MAPS_CACHE
     if not json_filepath.exists():
-        return {}
+        _FIELD_MAPS_CACHE = {}
+        return
     with open(json_filepath, "r", encoding="utf-8") as f:
         try:
-            return json.load(f)
+            _FIELD_MAPS_CACHE = json.load(f)
         except json.JSONDecodeError:
-            return {}
+            _FIELD_MAPS_CACHE = {}
+
+def get_field_maps() -> dict:
+    global _FIELD_MAPS_CACHE
+    if _FIELD_MAPS_CACHE is None:
+        load_field_maps()
+    return _FIELD_MAPS_CACHE
 
 def save_field_map(raw_field: str, mapped_field: str):
     maps = get_field_maps()
     maps[raw_field] = mapped_field
     with open(json_filepath, "w", encoding="utf-8") as f:
         json.dump(maps, f, ensure_ascii=False, indent=4)
+    load_field_maps()
 

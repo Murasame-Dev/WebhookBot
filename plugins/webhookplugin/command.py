@@ -32,7 +32,7 @@ webhook_cmd = on_alconna(
             Option("dmview:", Args["dmview?", str], compact=True),
             Option("verify_token:", Args["verify_token?", str], compact=True)
         ),
-        Subcommand("value",
+        Subcommand("map_word",
             Subcommand("create", Args["raw?", str]["mapped?", str])
         ),
         Subcommand("msg", 
@@ -44,7 +44,7 @@ webhook_cmd = on_alconna(
                 Option("nginx_mode:", Args["nginx_mode?", str], compact=True),
                 Option("ratelimit:", Args["ratelimit?", str], compact=True)
             ),
-            Subcommand("reload", Args["type?", str])
+            Subcommand("reload", Args["reload_type", str])
         ),
         meta=CommandMeta(description="Webhook Bot Management")
     ),
@@ -64,9 +64,9 @@ async def default_help(arp: Arparma):
             "/webhook info 代号 - 查询路由\n"
             "/webhook edit 代号 name:新名字 path:新路径 token:新秘钥 domain:新域名 dmview:true/false verify_token:join/header - 修改配置\n"
             "/webhook msg view 代号 1 - 查询代号实例的历史消息\n"
-            "/webhook value create 原字段 映射词 - 创建消息映射字典\n"
+            "/webhook map_word create 原字段 映射词 - 创建消息映射字典\n"
             "/webhook system edit secure:true/false nginx_mode:true/false ratelimit:次数,时间(分)/clear - 配置系统模式\n"
-            "/webhook system reload value/db/all - 重载映射词/数据库/全部"
+            "/webhook system reload map_word/db/all - 重载映射词/数据库/全部"
         )
         await webhook_cmd.finish(help_msg)
 
@@ -243,10 +243,10 @@ async def msg_view(code: Match[str], msg_id: Match[int]):
         
     await webhook_cmd.send(msg_text)
 
-@webhook_cmd.assign("value.create")
+@webhook_cmd.assign("map_word.create")
 async def create_value_map(raw: Match[str], mapped: Match[str]):
     if not raw.available or not mapped.available:
-        await webhook_cmd.finish("请提供原始值和代词!\n示例：/webhook value create raw mapped")
+        await webhook_cmd.finish("请提供原始值和代词!\n示例：/webhook map_word create raw mapped")
 
     save_field_map(raw.result, mapped.result)
         
@@ -305,22 +305,22 @@ async def edit_system(secure: Match[str], nginx_mode: Match[str], ratelimit: Mat
     await webhook_cmd.send("✅ 系统设定已更新：\n- " + "\n- ".join(updates))
 
 @webhook_cmd.assign("system.reload")
-async def reload_system(type: Match[str]):
-    if not type.available:
-        await webhook_cmd.finish("❌ 请指定重载类型，例如 value, db 或 all\n示例：/webhook system reload all")
+async def reload_system(arp: Arparma):
+    reload_type = arp.query("system.reload.reload_type")
+    if not reload_type:
+        await webhook_cmd.finish("❌ 请指定重载类型，例如 map_word, db 或 all\n示例：/webhook system reload all")
         
-    target = type.result.lower()
-    if target not in ["value", "db", "all"]:
-        await webhook_cmd.finish("❌ 错误的参数。仅支持 value, db 或 all")
+    target = str(reload_type).lower()
+    if target not in ["map_word", "db", "all"]:
+        await webhook_cmd.finish("❌ 错误的参数。仅支持 map_word, db 或 all")
 
     msg_lines = []
     
-    # 目前 value(field_maps.json) 是每次读取时直接访问磁盘的，本身即为"热重载"的。
-    # 这里为了满足用户的重载认知流程和未来可能扩展的缓存机制，显式进行反馈提醒。
-    if target in ["value", "all"]:
-        from .storage import get_field_maps
-        get_field_maps() # 预读一次验证是否能读通
-        msg_lines.append("✅ 映射词 (value) 已重载刷新")
+    # 重新加载 map_word(field_maps.json) 缓存字典
+    if target in ["map_word", "all"]:
+        from .storage import load_field_maps
+        load_field_maps() # 重新从本地磁盘读取映射词写入内存缓存
+        msg_lines.append("✅ 映射词 (map_word) 缓存已重载刷新")
         
     if target in ["db", "all"]:
         # 执行数据库模型初始化和同步测试
