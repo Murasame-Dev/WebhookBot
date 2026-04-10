@@ -140,18 +140,18 @@ async def info_webhook(code: Match[str]):
         verify_token = getattr(route, "verify_token", "join")
 
         msg = []
-        msg += f"代号: {route.code}"
-        msg += f"名字: {getattr(route, 'name', '未设置') or '未设置'}"
-        msg += f"路径: /webhook/{route.path}"
-        msg += f"鉴权方式: {'路径拼接(join)' if verify_token == 'join' else '请求头(header)'}"
-        msg += f"仅允许域名访问: {dmview_str}"
+        msg.append(f"代号: {route.code}")
+        msg.append(f"名字: {getattr(route, 'name', '未设置') or '未设置'}")
+        msg.append(f"路径: /webhook/{route.path}")
+        msg.append(f"鉴权方式: {'路径拼接(join)' if verify_token == 'join' else '请求头(header)'}")
+        msg.append(f"仅允许域名访问: {dmview_str}")
         if domains_str:
-            msg += f"绑定域名: {domains_str}"
-        msg += f"总调用次数: {route.total_calls}"
+            msg.append(f"绑定域名: {domains_str}")
+        msg.append(f"总调用次数: {route.total_calls}")
         if route.failed_calls:
-            msg += f"调用失败次数: {route.failed_calls}"
-        msg += f"创建日期: {route.created_at.strftime('%Y/%m/%d-%H:%M:%S')}"
-        msg += f"最后修改日期: {route.updated_at.strftime('%Y年%m月%d日-%H:%M:%S')}"
+            msg.append(f"调用失败次数: {route.failed_calls}")
+        msg.append(f"创建日期: {route.created_at.strftime('%Y/%m/%d-%H:%M:%S')}")
+        msg.append(f"最后修改日期: {route.updated_at.strftime('%Y年%m月%d日-%H:%M:%S')}")
 
         await webhook_cmd.send("\n".join(msg))
 
