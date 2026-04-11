@@ -90,6 +90,10 @@ async def default_help(arp: Arparma):
         msg.append("  - 选项 [secure:true/false](严格模式) [nginx_mode:true/false](Nginx 支持模式)")
         msg.append("webhook system reload - 重载配置/数据文件")
         msg.append("  - 选项 [map_word/db/blackword/all](映射词/数据库/黑名单词/全部)")
+        if config.show_repo_addr:
+            msg.append("")
+            msg.append("若可以,请对此项目点个小小的 Star⭐️,非常感谢!")
+            msg.append("项目地址: https://github.com/Murasame-Dev/WebhookBot")
         await webhook_cmd.finish("\n".join(msg))
 
 @webhook_cmd.assign("create")

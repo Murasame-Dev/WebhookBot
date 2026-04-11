@@ -6,3 +6,4 @@ class Config(BaseModel):
     webhook_host: str = "0.0.0.0"
     webhook_port: int = 8000
     webhook_data_path: str = "./data"
+    show_repo_addr: bool = False
