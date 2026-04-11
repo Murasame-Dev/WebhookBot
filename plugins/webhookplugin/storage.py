@@ -71,34 +71,86 @@ async def init_db():
     # 初始化 json 数据文件
     if not json_filepath.exists():
         with open(json_filepath, "w", encoding="utf-8") as f:
-            json.dump({}, f, ensure_ascii=False, indent=4)
+            json.dump({"map_word": {}, "blackword": []}, f, ensure_ascii=False, indent=4)
             
-    # 初始化读取映射词缓存
-    load_field_maps()
+    # 初始化读取映射词和黑名单词缓存
+    load_json_cache()
 
-_FIELD_MAPS_CACHE = None
+_JSON_CACHE = None
 
-def load_field_maps():
-    global _FIELD_MAPS_CACHE
+def load_json_cache():
+    global _JSON_CACHE
     if not json_filepath.exists():
-        _FIELD_MAPS_CACHE = {}
+        _JSON_CACHE = {"map_word": {}, "blackword": []}
         return
     with open(json_filepath, "r", encoding="utf-8") as f:
         try:
-            _FIELD_MAPS_CACHE = json.load(f)
+            _JSON_CACHE = json.load(f)
         except json.JSONDecodeError:
-            _FIELD_MAPS_CACHE = {}
+            _JSON_CACHE = {"map_word": {}, "blackword": []}
+
+def load_field_maps():
+    load_json_cache()
+
+def load_blackwords():
+    load_json_cache()
 
 def get_field_maps() -> dict:
-    global _FIELD_MAPS_CACHE
-    if _FIELD_MAPS_CACHE is None:
-        load_field_maps()
-    return _FIELD_MAPS_CACHE
+    global _JSON_CACHE
+    if _JSON_CACHE is None:
+        load_json_cache()
+    return _JSON_CACHE["map_word"]
+
+def get_blackwords() -> list:
+    global _JSON_CACHE
+    if _JSON_CACHE is None:
+        load_json_cache()
+    return _JSON_CACHE["blackword"]
 
 def save_field_map(raw_field: str, mapped_field: str):
-    maps = get_field_maps()
-    maps[raw_field] = mapped_field
+    global _JSON_CACHE
+    if _JSON_CACHE is None:
+        load_json_cache()
+    _JSON_CACHE["map_word"][raw_field] = mapped_field
     with open(json_filepath, "w", encoding="utf-8") as f:
-        json.dump(maps, f, ensure_ascii=False, indent=4)
-    load_field_maps()
+        json.dump(_JSON_CACHE, f, ensure_ascii=False, indent=4)
+
+def delete_field_map(raw_field: str) -> bool:
+    global _JSON_CACHE
+    if _JSON_CACHE is None:
+        load_json_cache()
+    
+    if raw_field in _JSON_CACHE["map_word"]:
+        del _JSON_CACHE["map_word"][raw_field]
+        with open(json_filepath, "w", encoding="utf-8") as f:
+            json.dump(_JSON_CACHE, f, ensure_ascii=False, indent=4)
+        return True
+    return False
+
+def add_blackword(word: str, mapped: str, match_type: str = "模糊"):
+    global _JSON_CACHE
+    if _JSON_CACHE is None:
+        load_json_cache()
+        
+    words = _JSON_CACHE["blackword"]
+    words = [w for w in words if w.get("word") != word]
+    words.append({"word": word, "mapped": mapped, "match_type": match_type})
+    _JSON_CACHE["blackword"] = words
+    
+    with open(json_filepath, "w", encoding="utf-8") as f:
+        json.dump(_JSON_CACHE, f, ensure_ascii=False, indent=4)
+
+def delete_blackword(word: str) -> bool:
+    global _JSON_CACHE
+    if _JSON_CACHE is None:
+        load_json_cache()
+        
+    words = _JSON_CACHE["blackword"]
+    filtered = [w for w in words if w.get("word") != word]
+    if len(filtered) < len(words):
+        _JSON_CACHE["blackword"] = filtered
+        with open(json_filepath, "w", encoding="utf-8") as f:
+            json.dump(_JSON_CACHE, f, ensure_ascii=False, indent=4)
+        return True
+    return False
 

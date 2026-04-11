@@ -8,7 +8,11 @@ from arclet.alconna import Alconna, Args, Option, Subcommand, CommandMeta
 from nonebot_plugin_alconna import on_alconna, Match, AlconnaMatch, Arparma
 from sqlalchemy import select, delete
 
-from .storage import Route, SystemConfig, AuditLog, async_session, save_field_map, init_db
+from .storage import (
+    Route, SystemConfig, AuditLog, async_session, 
+    save_field_map, delete_field_map, add_blackword, delete_blackword, init_db,
+    load_field_maps, load_blackwords
+)
 from .sender import dict_to_formatted_str
 
 # Nonebot Alconna 匹配路由注册器入口定义
@@ -33,7 +37,12 @@ webhook_cmd = on_alconna(
             Option("verify_token:", Args["verify_token?", str], compact=True)
         ),
         Subcommand("map_word",
-            Subcommand("create", Args["raw?", str]["mapped?", str])
+            Subcommand("create", Args["raw?", str]["mapped?", str]),
+            Subcommand("del", Args["del_raw?", str])
+        ),
+        Subcommand("blackword",
+            Subcommand("add", Args["raw?", str]["mapped?", str]["match_type?", str]),
+            Subcommand("del", Args["del_raw?", str])
         ),
         Subcommand("msg", 
             Subcommand("view", Args["code?", str]["msg_id?", int])
@@ -64,9 +73,10 @@ async def default_help(arp: Arparma):
             "/webhook info 代号 - 查询路由\n"
             "/webhook edit 代号 name:新名字 path:新路径 token:新秘钥 domain:新域名 dmview:true/false verify_token:join/header - 修改配置\n"
             "/webhook msg view 代号 1 - 查询代号实例的历史消息\n"
-            "/webhook map_word create 原字段 映射词 - 创建消息映射字典\n"
+            "/webhook map_word create/del 原字段 [映射词] - 创建或删除消息映射字典\n"
+            "/webhook blackword add/del 原始值 [映射值] [严格/模糊] - 添加/删除黑名单词(发送时替换)\n"
             "/webhook system edit secure:true/false nginx_mode:true/false ratelimit:次数,时间(分)/clear - 配置系统模式\n"
-            "/webhook system reload map_word/db/all - 重载映射词/数据库/全部"
+            "/webhook system reload map_word/db/blackword/all - 重载映射词/数据库/黑名单词/全部"
         )
         await webhook_cmd.finish(help_msg)
 
@@ -252,6 +262,38 @@ async def create_value_map(raw: Match[str], mapped: Match[str]):
         
     await webhook_cmd.send(f"✅ 特殊值映射创建成功：{raw.result} -> {mapped.result}")
 
+@webhook_cmd.assign("map_word.del")
+async def delete_value_map(del_raw: Match[str]):
+    if not del_raw.available:
+        await webhook_cmd.finish("请提供要删除的特殊值原始名!\n示例：/webhook map_word del raw")
+        
+    if delete_field_map(del_raw.result):
+        await webhook_cmd.send(f"✅ 特殊值映射删除成功：{del_raw.result}")
+    else:
+        await webhook_cmd.finish(f"❌ 找不到需要删除的映射词：{del_raw.result}")
+
+@webhook_cmd.assign("blackword.add")
+async def add_blackword_map(raw: Match[str], mapped: Match[str], match_type: Match[str]):
+    if not raw.available or not mapped.available:
+        await webhook_cmd.finish("请提供原始值和映射值!\n示例：/webhook blackword add 原文 被替换文 [严格/模糊]")
+        
+    m_type = "模糊"
+    if match_type.available and match_type.result in ["严格", "模糊"]:
+        m_type = match_type.result
+    
+    add_blackword(raw.result, mapped.result, m_type)
+    await webhook_cmd.send(f"✅ 黑名单词添加成功：{raw.result} -> {mapped.result} ({m_type}匹配)")
+
+@webhook_cmd.assign("blackword.del")
+async def del_blackword_map(del_raw: Match[str]):
+    if not del_raw.available:
+        await webhook_cmd.finish("请提供要删除的黑名单词原文!\n示例：/webhook blackword del 原文")
+        
+    if delete_blackword(del_raw.result):
+        await webhook_cmd.send(f"✅ 黑名单词删除成功：{del_raw.result}")
+    else:
+        await webhook_cmd.finish(f"❌ 找不到该黑名单词：{del_raw.result}")
+
 @webhook_cmd.assign("system.edit")
 async def edit_system(secure: Match[str], nginx_mode: Match[str], ratelimit: Match[str]):
     if not secure.available and not nginx_mode.available and not ratelimit.available:
@@ -308,11 +350,11 @@ async def edit_system(secure: Match[str], nginx_mode: Match[str], ratelimit: Mat
 async def reload_system(arp: Arparma):
     reload_type = arp.query("system.reload.reload_type")
     if not reload_type:
-        await webhook_cmd.finish("❌ 请指定重载类型，例如 map_word, db 或 all\n示例：/webhook system reload all")
+        await webhook_cmd.finish("❌ 请指定重载类型，例如 map_word, blackword, db 或 all\n示例：/webhook system reload all")
         
     target = str(reload_type).lower()
-    if target not in ["map_word", "db", "all"]:
-        await webhook_cmd.finish("❌ 错误的参数。仅支持 map_word, db 或 all")
+    if target not in ["map_word", "blackword", "db", "all"]:
+        await webhook_cmd.finish("❌ 错误的参数。仅支持 map_word, blackword, db 或 all")
 
     msg_lines = []
     
@@ -321,6 +363,12 @@ async def reload_system(arp: Arparma):
         from .storage import load_field_maps
         load_field_maps() # 重新从本地磁盘读取映射词写入内存缓存
         msg_lines.append("✅ 映射词 (map_word) 缓存已重载刷新")
+
+    # 重新加载 blackwords 缓存
+    if target in ["blackword", "all"]:
+        from .storage import load_blackwords
+        load_blackwords()
+        msg_lines.append("✅ 黑名单词 (blackword) 缓存已重载刷新")
         
     if target in ["db", "all"]:
         # 执行数据库模型初始化和同步测试

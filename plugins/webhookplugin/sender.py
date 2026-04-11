@@ -4,7 +4,30 @@ from nonebot import logger
 from nonebot_plugin_alconna import Target, UniMessage
 from sqlalchemy import select
 
-from .storage import Route, AuditLog, async_session, get_field_maps
+from .storage import Route, AuditLog, async_session, get_field_maps, get_blackwords
+
+def apply_blackwords(text: str) -> str:
+    blackwords = get_blackwords()
+    if not blackwords:
+        return text
+        
+    for bw in blackwords:
+        word = bw.get("word", "")
+        mapped = bw.get("mapped", "")
+        match_type = bw.get("match_type", "模糊")
+        
+        if not word:
+            continue
+            
+        if match_type == "严格":
+            # 严格匹配（整个字符串等于该词）
+            if text == word:
+                text = mapped
+        else:
+            # 模糊匹配（直接替换子串）
+            text = text.replace(word, mapped)
+            
+    return text
 
 async def dict_to_formatted_str(code: str, payload_dict: dict, msg_index: int, dt: datetime = None, client_ip: str = None) -> str:
     # 获取所有的映射
@@ -17,7 +40,10 @@ async def dict_to_formatted_str(code: str, payload_dict: dict, msg_index: int, d
     lines = [f"代号 {code} 发送了以下消息:"]
     for k, v in payload_dict.items():
         mapped_key = maps.get(k, k)
-        lines.append(f"{mapped_key}: {v}\n")
+        # 将 value 转为字符串以应用黑名单词替换
+        val_str = str(v)
+        val_str = apply_blackwords(val_str)
+        lines.append(f"{mapped_key}: {val_str}\n")
     
     lines.append(f"编号: {msg_index}")
     lines.append(f"接收时间(服务器侧): {server_time}")
