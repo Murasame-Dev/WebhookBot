@@ -204,7 +204,7 @@ async def edit_webhook(code: Match[str], name: Match[str], path: Match[str], tok
         msg.append("  - verify_token: 修改鉴权方式,join为路径拼接(默认), header为请求头")
         msg.append("  - ratelimit: 修改速率限制,格式为 '次数,时间(分)','clear' 为无速率限制")
         msg.append("")
-        msg.append("你触发此命令的情况有两种:")
+        msg.append("你触发此帮助的情况有两种:")
         msg.append("  - 你没有提供 [name] 参数")
         msg.append("  - 纯粹的想查看帮助文档(判断逻辑如上)")
         await webhook_cmd.finish("\n".join(msg))
