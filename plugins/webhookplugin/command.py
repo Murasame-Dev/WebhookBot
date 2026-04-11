@@ -1,6 +1,6 @@
 import json
 import uuid
-from nonebot import require
+from nonebot import require, get_plugin_config
 require("nonebot_plugin_alconna")
 from nonebot.permission import SUPERUSER
 
@@ -14,6 +14,9 @@ from .storage import (
     load_field_maps, load_blackwords
 )
 from .sender import dict_to_formatted_str
+
+from .config import Config
+config = get_plugin_config(Config)
 
 # Nonebot Alconna 匹配路由注册器入口定义
 webhook_cmd = on_alconna(
@@ -34,7 +37,8 @@ webhook_cmd = on_alconna(
             Option("token:", Args["token?", str], compact=True),
             Option("domain:", Args["domain?", str], compact=True),
             Option("dmview:", Args["dmview?", str], compact=True),
-            Option("verify_token:", Args["verify_token?", str], compact=True)
+            Option("verify_token:", Args["verify_token?", str], compact=True),
+            Option("ratelimit:", Args["ratelimit?", str], compact=True)
         ),
         Subcommand("map_word",
             Subcommand("create", Args["raw?", str]["mapped?", str]),
@@ -50,8 +54,7 @@ webhook_cmd = on_alconna(
         Subcommand("system", 
             Subcommand("edit", 
                 Option("secure:", Args["secure?", str], compact=True),
-                Option("nginx_mode:", Args["nginx_mode?", str], compact=True),
-                Option("ratelimit:", Args["ratelimit?", str], compact=True)
+                Option("nginx_mode:", Args["nginx_mode?", str], compact=True)
             ),
             Subcommand("reload", Args["reload_type", str])
         ),
@@ -64,21 +67,29 @@ webhook_cmd = on_alconna(
 @webhook_cmd.handle()
 async def default_help(arp: Arparma):
     if not arp.subcommands:
-        help_msg = (
-            "欢迎使用 WebhookBot!\n"
-            "指令列表:\n"
-            "/webhook create user:id,id group:id,id 代号 - 创建路由\n"
-            "/webhook remove 代号 - 删除路由\n"
-            "/webhook list - 显示所有实例代号\n"
-            "/webhook info 代号 - 查询路由\n"
-            "/webhook edit 代号 name:新名字 path:新路径 token:新秘钥 domain:新域名 dmview:true/false verify_token:join/header - 修改配置\n"
-            "/webhook msg view 代号 1 - 查询代号实例的历史消息\n"
-            "/webhook map_word create/del 原字段 [映射词] - 创建或删除消息映射字典\n"
-            "/webhook blackword add/del 原始值 [映射值] [严格/模糊] - 添加/删除黑名单词(发送时替换)\n"
-            "/webhook system edit secure:true/false nginx_mode:true/false ratelimit:次数,时间(分)/clear - 配置系统模式\n"
-            "/webhook system reload map_word/db/blackword/all - 重载映射词/数据库/黑名单词/全部"
-        )
-        await webhook_cmd.finish(help_msg)
+        msg = []
+        msg.append("欢迎,这里是 WebhookBot 的帮助文档！")
+        msg.append("你必须要**输入指令前缀**(若为空则无视)才能触发本插件功能")
+        msg.append("指令列表:")
+        msg.append("webhook create - 创建一个代号为 [name] 的 Webhook 路由")
+        msg.append("  - 选项: [user:id] [group:id] [name]")
+        msg.append("  - [user] 和 [group] 可任选其一添加,[name] 不会影响你最终创建的路径")
+        msg.append("webhook remove [name] - 删除代号为 [name] 的 Webhook 路由")
+        msg.append("webhook list - 显示所有 Webhook 路由的代号")
+        msg.append("webhook info [name] - 查询代号为 [name] 的路由")
+        msg.append("webhook edit [name] - 修改代号为 [name] 的路由信息")
+        msg.append("  - 选项: [name:新代号] [path:新路径] [token:新秘钥] [domain:新域名] [dmview:true/false] [verify_token:join/header] [ratelimit:次数,时间(分)/clear]")
+        msg.append("  - 具体参数说明请输入 webhook edit 查看")
+        msg.append("webhook msg view [name] [number] - 查询代号为 [name] 的第 [number] 条消息")
+        msg.append("webhook map_word create [word] [new_word] - 创建一个将 [word] 属性值替换成 [new_word] 的映射词")
+        msg.append("webhook map_word del [word] - 删除名为 [word] 的属性替换词")
+        msg.append("webhook blackword add [bkwd] [new_bkwd] - 添加一个将 [bkwd] 黑名单词替换成 [new_bkwd] 的映射词")
+        msg.append("webhook map_word del [bkwd] - 删除名为 [bkwd] 的黑名单替换词")
+        msg.append("webhook system edit - 修改系统配置")
+        msg.append("  - 选项 [secure:true/false](严格模式) [nginx_mode:true/false](Nginx 支持模式)")
+        msg.append("webhook system reload - 重载配置/数据文件")
+        msg.append("  - 选项 [map_word/db/blackword/all](映射词/数据库/黑名单词/全部)")
+        await webhook_cmd.finish("\n".join(msg))
 
 @webhook_cmd.assign("create")
 async def create_webhook(
@@ -146,8 +157,10 @@ async def info_webhook(code: Match[str]):
             return
         domains_list = json.loads(route.domains) if getattr(route, "domains", None) else []
         domains_str = ",".join(domains_list) if domains_list else "未配置"
-        dmview_str = "允许 (true)" if getattr(route, "dmview", True) else "禁止 (false)"
+        dmview_str = "打开 (true)" if getattr(route, "dmview", True) else "关闭 (false)"
         verify_token = getattr(route, "verify_token", "join")
+        rl_val = getattr(route, "ratelimit", None)
+        ratelimit_str = f"每 {rl_val.split(',')[1]} 分钟 {rl_val.split(',')[0]} 次" if rl_val else "未设置或无限制"
 
         msg = []
         msg.append(f"代号: {route.code}")
@@ -157,6 +170,7 @@ async def info_webhook(code: Match[str]):
         msg.append(f"仅允许域名访问: {dmview_str}")
         if domains_str:
             msg.append(f"绑定域名: {domains_str}")
+        msg.append(f"速率限制: {ratelimit_str}")
         msg.append(f"总调用次数: {route.total_calls}")
         if route.failed_calls:
             msg.append(f"调用失败次数: {route.failed_calls}")
@@ -176,11 +190,26 @@ async def list_webhooks():
         await webhook_cmd.send("当前存在的实例:\n" + "\n".join(codes))
 
 @webhook_cmd.assign("edit")
-async def edit_webhook(code: Match[str], name: Match[str], path: Match[str], token: Match[str], domain: Match[str], dmview: Match[str], verify_token: Match[str]):
+async def edit_webhook(code: Match[str], name: Match[str], path: Match[str], token: Match[str], domain: Match[str], dmview: Match[str], verify_token: Match[str], ratelimit: Match[str]):
     if not code.available:
-        await webhook_cmd.finish("请提供代号!")
-    if not any([name.available, path.available, token.available, domain.available, dmview.available, verify_token.available]):
-        await webhook_cmd.finish("请至少提供 name, path, token, domain, dmview 或 verify_token 参数进行修改。\n示例：/webhook edit 代号 name:新名字 verify_token:header")
+        msg = []
+        msg.append("webhook edit [name] - 修改代号为 [name] 的路由信息")
+        msg.append("  - 选项: [name:新代号] [path:新路径] [token:新秘钥] [domain:新域名] [dmview:true/false] [verify_token:join/header] [ratelimit:次数,时间(分)/clear]")
+        msg.append("  - 具体参数说明：")
+        msg.append("  - name: 修改代号")
+        msg.append("  - path: 修改路径")
+        msg.append("  - token: 修改秘钥")
+        msg.append("  - domain: 修改绑定域名，多个域名请用英文逗号分隔")
+        msg.append("  - dmview: 仅允许域名访问, true为打开(仅允许域名访问), false为关闭(域名或IP均可访问)")
+        msg.append("  - verify_token: 修改鉴权方式,join为路径拼接(默认), header为请求头")
+        msg.append("  - ratelimit: 修改速率限制,格式为 '次数,时间(分)','clear' 为无速率限制")
+        msg.append("")
+        msg.append("你触发此命令的情况有两种:")
+        msg.append("  - 你没有提供 [name] 参数")
+        msg.append("  - 纯粹的想查看帮助文档(判断逻辑如上)")
+        await webhook_cmd.finish("\n".join(msg))
+    if not any([name.available, path.available, token.available, domain.available, dmview.available, verify_token.available, ratelimit.available]):
+        await webhook_cmd.finish("请至少提供 name, path, token, domain, dmview, verify_token 或 ratelimit 参数进行修改。\n示例：/webhook edit 代号 ratelimit:10,1")
 
     async with async_session() as session:
         route = await session.scalar(select(Route).where(Route.code == code.result))
@@ -206,13 +235,29 @@ async def edit_webhook(code: Match[str], name: Match[str], path: Match[str], tok
             changes.append(f"绑定域名 -> {parsed_domains}")
         if dmview.available:
             route.dmview = dmview.result.lower() == "true"
-            changes.append(f"非绑定域名访问 -> {'允许(true)' if route.dmview else '禁止(false)'}")
+            changes.append(f"仅允许域名访问 -> {'打开(true)' if route.dmview else '关闭(false)'}")
         if verify_token.available:
             if verify_token.result not in ["join", "header"]:
                 await webhook_cmd.finish("verify_token 参数只允许使用 'join' 或 'header'")
             route.verify_token = verify_token.result
             changes.append(f"鉴权方式 -> {'路径拼接(join)' if verify_token.result == 'join' else '请求头(header)'}")
-            
+
+        if ratelimit.available:
+            val = ratelimit.result.lower()
+            if val == "clear":
+                route.ratelimit = None
+                changes.append("速率限制 -> 已清除(无限制)")
+            else:
+                try:
+                    c_str, t_str = val.split(",")
+                    c, t = int(c_str.strip()), int(t_str.strip())
+                    if c <= 0 or t <= 0:
+                        await webhook_cmd.finish("❌️ ratelimit 次数和时间必须大于0！")
+                    route.ratelimit = f"{c},{t}"
+                    changes.append(f"速率限制 -> 同一IP在 {t} 分钟内最多 {c} 次")
+                except Exception:
+                    await webhook_cmd.finish("❌️ ratelimit 参数格式错误！请使用 '次数,时间(分)'（例如 10,1）或 'clear'")
+
         await session.commit()
         
     changes_str = "\n".join([f"- {c}" for c in changes])
@@ -295,9 +340,9 @@ async def del_blackword_map(del_raw: Match[str]):
         await webhook_cmd.finish(f"❌ 找不到该黑名单词：{del_raw.result}")
 
 @webhook_cmd.assign("system.edit")
-async def edit_system(secure: Match[str], nginx_mode: Match[str], ratelimit: Match[str]):
-    if not secure.available and not nginx_mode.available and not ratelimit.available:
-        await webhook_cmd.finish("❌️ 请至少提供一项系统配置：secure/nginx_mode/ratelimit")
+async def edit_system(secure: Match[str], nginx_mode: Match[str]):
+    if not secure.available and not nginx_mode.available:
+        await webhook_cmd.finish("❌️ 请至少提供一项系统配置：secure/nginx_mode")
         
     updates = []
     async with async_session() as session:
@@ -317,30 +362,7 @@ async def edit_system(secure: Match[str], nginx_mode: Match[str], ratelimit: Mat
                 conf.value = val_str
             else:
                 session.add(SystemConfig(key="nginx_mode", value=val_str))
-            updates.append(f"Nginx代理透传支持 (nginx_mode) -> {val_str}")
-            
-        if ratelimit.available:
-            val = ratelimit.result.lower()
-            if val == "clear":
-                val_str = "clear"
-                updates.append("速率限制 (ratelimit) -> 已清除(无限制)")
-            else:
-                try:
-                    c, t = val.split(",")
-                    c = int(c)
-                    t = int(t)
-                    if c <= 0 or t <= 0:
-                        raise ValueError
-                    val_str = f"{c},{t}"
-                    updates.append(f"速率限制 (ratelimit) -> 当一IP在 {t} 分钟内最多 {c} 次")
-                except Exception:
-                    await webhook_cmd.finish("❌️ ratelimit 参数格式错误！请使用 '次数,时间(分)'（例如 10,1 代表每分钟10次）或 'clear' 清除限制。")
-            
-            conf = await session.scalar(select(SystemConfig).where(SystemConfig.key == "ratelimit"))
-            if conf:
-                conf.value = val_str
-            else:
-                session.add(SystemConfig(key="ratelimit", value=val_str))
+            updates.append(f"Nginx 代理透传支持 (nginx_mode) -> {val_str}")
             
         await session.commit()
         

@@ -35,6 +35,7 @@ class Route(Base):
     groups: Mapped[str] = mapped_column(Text(), default="[]") # 保存为 JSON 数组字符串格式的群聊 ID 列表
     domains: Mapped[str] = mapped_column(Text(), default="[]") # 保存为 JSON 数组字符串格式的绑定域名白名单
     dmview: Mapped[bool] = mapped_column(default=True) # 是否允许非绑定域名的主机头或纯 IP 进行访问
+    ratelimit: Mapped[str] = mapped_column(String(50), nullable=True) # 实例独立的速率限制。值为 "次数,分钟" 或 null
     total_calls: Mapped[int] = mapped_column(Integer(), default=0)
     failed_calls: Mapped[int] = mapped_column(Integer(), default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -67,6 +68,12 @@ async_session = async_sessionmaker(engine, expire_on_commit=False)
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # 用轻量的方式给可能已经存在的旧表添加新列，异常说明列已经存在
+        try:
+            from sqlalchemy import text
+            await conn.execute(text("ALTER TABLE webhook_routes ADD COLUMN ratelimit VARCHAR(50);"))
+        except Exception:
+            pass
         
     # 初始化 json 数据文件
     if not json_filepath.exists():

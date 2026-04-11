@@ -63,15 +63,16 @@ async def handle_webhook(path: str, request: Request):
             )
 
         # 0. 速率限制检查
-        rl_conf = await session.scalar(select(SystemConfig).where(SystemConfig.key == "ratelimit"))
-        if rl_conf and rl_conf.value and rl_conf.value != "clear":
+        if route.ratelimit:
             try:
-                c_str, t_str = rl_conf.value.split(",")
+                c_str, t_str = route.ratelimit.split(",")
                 max_hits = int(c_str)
                 window_sec = int(t_str) * 60
                 
                 now = time.time()
-                records = _RATE_LIMITS.get(client_ip, [])
+                # 使用 route.code 和 client_ip 组合作为 key，使得对于不同的实例采用独立的限流计算
+                rl_key = f"{route.code}_{client_ip}"
+                records = _RATE_LIMITS.get(rl_key, [])
                 records = [t for t in records if now - t < window_sec]
                 
                 if len(records) >= max_hits:
@@ -91,7 +92,7 @@ async def handle_webhook(path: str, request: Request):
                     raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too Many Requests")
                 
                 records.append(now)
-                _RATE_LIMITS[client_ip] = records
+                _RATE_LIMITS[rl_key] = records
             except HTTPException:
                 raise
             except Exception as e:
